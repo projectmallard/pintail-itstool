@@ -1,9 +1,19 @@
 from setuptools import setup
 
+import subprocess
 import sys
 
 if sys.version_info[0] != 3:
     sys.stderr.write("pintail-itstool requires python 3\n")
+    sys.exit(1)
+
+status, output = subprocess.getstatusoutput('itstool --version')
+if status != 0:
+    sys.stderr.write("pintail-itstool requires itstool >= 2.0.2\n")
+    sys.exit(1)
+version = tuple(int(x) for x in output.split()[-1].split('.'))
+if version < (2, 0, 2):
+    sys.stderr.write("pintail-itstool requires itstool >= 2.0.2\n")
     sys.exit(1)
 
 setup(
