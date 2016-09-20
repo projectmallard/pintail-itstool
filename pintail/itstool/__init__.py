@@ -15,6 +15,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import os
+import shutil
 import subprocess
 
 import pintail.translation
@@ -28,7 +29,7 @@ class ItstoolTranslationProvider(pintail.translation.TranslationProvider):
 
     def get_directory_langs(self, directory):
         langs = []
-        pardir = os.path.dirname(directory.source_path)
+        pardir = os.path.dirname(directory.get_source_path())
         for d in os.listdir(pardir):
             pd = os.path.join(pardir, d)
             if os.path.isdir(pd):
@@ -60,12 +61,27 @@ class ItstoolTranslationProvider(pintail.translation.TranslationProvider):
         self.site.log('TRANS', lang + ' ' + page.site_id)
         ret = subprocess.call([
             'itstool',
-            '--path', os.path.dirname(page.source_path),
+            '--path', os.path.dirname(page.get_source_path()),
             '-m', mofile,
             '-o', page.get_stage_path(lang),
             page.get_stage_path()
         ])
         if ret != 0:
             self.site.logger.warn('Could not translate %s to %s' % (page.site_id, lang))
+            return False
+        return True
+
+    def translate_media(self, directory, mediafile, lang):
+        if directory not in self._po_for_directory:
+            return False
+        if lang not in self._po_for_directory[directory]:
+            return False
+        podir = os.path.dirname(self._po_for_directory[directory][lang])
+        mfile = os.path.join(podir, mediafile)
+        try:
+            target = os.path.join(directory.get_stage_path(lang), mediafile)
+            pintail.site.Site._makedirs(os.path.dirname(target))
+            shutil.copyfile(mfile, target)
+        except Exception as e:
             return False
         return True
