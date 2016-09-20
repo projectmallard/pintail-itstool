@@ -26,6 +26,7 @@ class ItstoolTranslationProvider(pintail.translation.TranslationProvider):
         pintail.translation.TranslationProvider.__init__(self, site)
         self._po_for_directory = {}
         self._mo_for_po = {}
+        self._batched_dirs = {}
 
     def get_directory_langs(self, directory):
         langs = []
@@ -58,18 +59,36 @@ class ItstoolTranslationProvider(pintail.translation.TranslationProvider):
             subprocess.call(['msgfmt', '-o', mofile, pofile])
             self._mo_for_po[pofile] = mofile
         mofile = self._mo_for_po[pofile]
-        self.site.log('TRANS', lang + ' ' + page.site_id)
-        ret = subprocess.call([
-            'itstool',
-            '--path', os.path.dirname(page.get_source_path()),
-            '-m', mofile,
-            '-o', page.get_stage_path(lang),
-            page.get_stage_path()
-        ])
-        if ret != 0:
-            self.site.logger.warn('Could not translate %s to %s' % (page.site_id, lang))
-            return False
-        return True
+
+        if self.site.config.get('itstool_batch_dirs') == 'True':
+            self._batched_dirs.setdefault(page.directory.path, [])
+            if lang in self._batched_dirs[page.directory.path]:
+                return True
+            self._batched_dirs[page.directory.path].append(lang)
+            self.site.log('TRANS', lang + ' ' + page.directory.path)
+            cmd = ['itstool',
+                   '--path', os.path.dirname(page.get_source_path()),
+                   '-m', mofile,
+                   '-o', page.directory.get_stage_path(lang)]
+            cmd += [p.get_stage_path() for p in page.directory.pages]
+            ret = subprocess.call(cmd)
+            if ret != 0:
+                self.site.logger.warn('Could not translate %s to %s' % (page.directory.path, lang))
+                return False
+            return True
+        else:
+            self.site.log('TRANS', lang + ' ' + page.site_id)
+            ret = subprocess.call([
+                'itstool',
+                '--path', os.path.dirname(page.get_source_path()),
+                '-m', mofile,
+                '-o', page.get_stage_path(lang),
+                page.get_stage_path()
+            ])
+            if ret != 0:
+                self.site.logger.warn('Could not translate %s to %s' % (page.site_id, lang))
+                return False
+            return True
 
     def translate_media(self, directory, mediafile, lang):
         if directory not in self._po_for_directory:
