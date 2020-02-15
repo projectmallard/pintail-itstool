@@ -22,23 +22,45 @@ import pintail.translation
 import pintail.site
 
 class ItstoolTranslationProvider(pintail.translation.TranslationProvider):
+    """
+    A translation provider using PO files with itstool.
+
+    This translation provider assumes that, for any source, the PO files with
+    translations are kept in language subdirectories of the source's parent
+    directory. This works well for external repos with individual documents,
+    like GNOME has. It does not work so well for simple Mallard site layouts.
+
+    FIXME: Make this more flexible for different layouts. Nothing about itstool
+    prevents this plugin from being smarter.
+    """
+
     def __init__(self, site):
         pintail.translation.TranslationProvider.__init__(self, site)
-        self._po_for_directory = {}
+        self._po_for_source = {}
         self._mo_for_po = {}
-        self._batched_dirs = {}
+        self._batched_sources = {}
 
     def get_directory_langs(self, directory):
+        """
+        Get all languages available for a single directory.
+
+        For each source in the directory, this method looks at the subdirectories
+        of the source's parent directory. If a directory contains a PO file with
+        the same basename as the directory, then it creates a language with that
+        basename as the language code.
+        """
         langs = []
-        pardir = os.path.dirname(directory.get_source_path())
-        for d in os.listdir(pardir):
-            pd = os.path.join(pardir, d)
-            if os.path.isdir(pd):
-                po = os.path.join(pd, d + '.po')
-                if os.path.isfile(po):
-                    self._po_for_directory.setdefault(directory, {})
-                    self._po_for_directory[directory][d] = po
-                    langs.append(d)
+        for source in directory.sources:
+            parentpath = os.path.dirname(source.get_source_path())
+            for langdir in os.listdir(parentpath):
+                langpath = os.path.join(parentpath, langdir)
+                if os.path.isdir(langpath):
+                    popath = os.path.join(langpath, langdir + '.po')
+                    if os.path.isfile(popath):
+                        self._po_for_source.setdefault(source, {})
+                        self._po_for_source[source][langdir] = popath
+                        if langdir not in langs:
+                            langs.append(langdir)
         if len(langs) > 0:
             return langs
         # FIXME:
@@ -48,29 +70,40 @@ class ItstoolTranslationProvider(pintail.translation.TranslationProvider):
         return []
 
     def translate_page(self, page, lang):
-        if page.directory not in self._po_for_directory:
+        """
+        Translate a page into a language and return whether it was translated.
+        """
+        if page.source not in self._po_for_source:
             return False
-        if lang not in self._po_for_directory[page.directory]:
+        if lang not in self._po_for_source[page.source]:
             return False
-        pofile = self._po_for_directory[page.directory][lang]
+        pofile = self._po_for_source[page.source][lang]
         if pofile not in self._mo_for_po:
-            pintail.site.Site._makedirs(page.directory.get_stage_path(lang))
-            mofile = os.path.join(page.directory.get_stage_path(lang), lang + '.mo')
+            if page.source.name == page.source.directory.path:
+                pintail.site.Site._makedirs(page.directory.get_stage_path(lang))
+                mofile = os.path.join(page.directory.get_stage_path(lang), lang + '.mo')
+            else:
+                # If it's not the primary source, make a subdirectory for
+                # the mo file so we don't conflict.
+                modir = os.path.join(page.directory.get_stage_path(lang),
+                                     page.source.name.replace('/', '!'))
+                pintail.site.Site._makedirs(modir)
+                mofile = os.path.join(modir, lang + '.mo')
             subprocess.call(['msgfmt', '-o', mofile, pofile])
             self._mo_for_po[pofile] = mofile
         mofile = self._mo_for_po[pofile]
 
         if self.site.config.get('itstool_batch_dirs') == 'True':
-            self._batched_dirs.setdefault(page.directory.path, [])
-            if lang in self._batched_dirs[page.directory.path]:
+            self._batched_sources.setdefault(page.source.name, [])
+            if lang in self._batched_sources[page.source.name]:
                 return True
-            self._batched_dirs[page.directory.path].append(lang)
-            self.site.log('TRANS', lang + ' ' + page.directory.path)
+            self._batched_sources[page.source.name].append(lang)
+            self.site.log('TRANS', lang + ' ' + page.source.name)
             cmd = ['itstool',
                    '--path', os.path.dirname(page.get_source_path()),
-                   '-m', mofile,
+                   '-m', mofile, '-l', lang,
                    '-o', page.directory.get_stage_path(lang)]
-            cmd += [p.get_stage_path() for p in page.directory.pages]
+            cmd += [p.get_stage_path() for p in page.source.pages]
             ret = subprocess.call(cmd)
             if ret != 0:
                 self.site.logger.warn('Could not translate %s to %s' % (page.directory.path, lang))
@@ -81,7 +114,7 @@ class ItstoolTranslationProvider(pintail.translation.TranslationProvider):
             ret = subprocess.call([
                 'itstool',
                 '--path', os.path.dirname(page.get_source_path()),
-                '-m', mofile,
+                '-m', mofile, '-l', lang,
                 '-o', page.get_stage_path(lang),
                 page.get_stage_path()
             ])
@@ -90,15 +123,21 @@ class ItstoolTranslationProvider(pintail.translation.TranslationProvider):
                 return False
             return True
 
-    def translate_media(self, directory, mediafile, lang):
-        if directory not in self._po_for_directory:
+    def translate_media(self, source, mediafile, lang):
+        """
+        Translate a media file into a language and return whether it was translated.
+
+        This implementation looks for translated media files relative to the path
+        of the PO file, regardless of whether they have a listing in the PO file.
+        """
+        if source not in self._po_for_source:
             return False
-        if lang not in self._po_for_directory[directory]:
+        if lang not in self._po_for_source[source]:
             return False
-        podir = os.path.dirname(self._po_for_directory[directory][lang])
+        podir = os.path.dirname(self._po_for_source[source][lang])
         mfile = os.path.join(podir, mediafile)
         try:
-            target = os.path.join(directory.get_stage_path(lang), mediafile)
+            target = os.path.join(source.directory.get_stage_path(lang), mediafile)
             pintail.site.Site._makedirs(os.path.dirname(target))
             shutil.copyfile(mfile, target)
         except Exception as e:
