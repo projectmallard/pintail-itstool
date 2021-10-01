@@ -39,6 +39,8 @@ class ItstoolTranslationProvider(pintail.translation.TranslationProvider):
         self._po_for_source = {}
         self._mo_for_po = {}
         self._batched_sources = {}
+        self._executor = None
+        self._threaded_sources = {}
 
     def get_directory_langs(self, directory):
         """
@@ -69,6 +71,49 @@ class ItstoolTranslationProvider(pintail.translation.TranslationProvider):
         # otherwise, return []
         return []
 
+
+    def translate_directory(self, directory, lang):
+        """
+        Translate a directory into a language and return whether it was translated.
+        """
+        if self.site.config.get('itstool_thread_dirs') == 'True':
+            if self._executor is None:
+                import concurrent.futures
+                self._executor = concurrent.futures.ThreadPoolExecutor()
+            for source in directory.sources:
+                if source not in self._po_for_source:
+                    continue
+                pofile = self._po_for_source[source][lang]
+                if source.name == source.directory.path:
+                    pintail.site.Site._makedirs(directory.get_stage_path(lang))
+                    mofile = os.path.join(directory.get_stage_path(lang), lang + '.mo')
+                else:
+                    # If it's not the primary source, make a subdirectory for
+                    # the mo file so we don't conflict.
+                    modir = os.path.join(directory.get_stage_path(lang),
+                                         source.name.replace('/', '!'))
+                    pintail.site.Site._makedirs(modir)
+                    mofile = os.path.join(modir, lang + '.mo')
+                def _run_source_lang():
+                    subprocess.call(['msgfmt', '-o', mofile, pofile])
+                    self._mo_for_po[pofile] = mofile
+                    cmd = ['itstool',
+                           '--path', source.get_source_path(),
+                           '-m', mofile, '-l', lang,
+                           '-o', directory.get_stage_path(lang)]
+                    cmd += [p.get_stage_path() for p in source.pages]
+                    self.site.log('TRANS', lang + ' ' + source.name)
+                    ret = subprocess.call(cmd)
+                    if ret != 0:
+                        self.site.logger.warn('Could not translate %s to %s' % (directory.path, lang))
+                        return False
+                    return True
+                self._threaded_sources.setdefault(source, {})
+                self._threaded_sources[source][lang] = self._executor.submit(_run_source_lang)
+            return True
+        return False
+
+
     def translate_page(self, page, lang):
         """
         Translate a page into a language and return whether it was translated.
@@ -77,6 +122,13 @@ class ItstoolTranslationProvider(pintail.translation.TranslationProvider):
             return False
         if lang not in self._po_for_source[page.source]:
             return False
+
+        if self.site.config.get('itstool_thread_dirs') == 'True':
+            job = self._threaded_sources[page.source][lang]
+            if job.running():
+                self.site.log('WAIT', lang + ' ' + page.source.name)
+            return job.result()
+
         pofile = self._po_for_source[page.source][lang]
         if pofile not in self._mo_for_po:
             if page.source.name == page.source.directory.path:
@@ -94,10 +146,10 @@ class ItstoolTranslationProvider(pintail.translation.TranslationProvider):
         mofile = self._mo_for_po[pofile]
 
         if self.site.config.get('itstool_batch_dirs') == 'True':
-            self._batched_sources.setdefault(page.source.name, [])
-            if lang in self._batched_sources[page.source.name]:
+            self._batched_sources.setdefault(page.source, [])
+            if lang in self._batched_sources[page.source]:
                 return True
-            self._batched_sources[page.source.name].append(lang)
+            self._batched_sources[page.source].append(lang)
             self.site.log('TRANS', lang + ' ' + page.source.name)
             cmd = ['itstool',
                    '--path', os.path.dirname(page.get_source_path()),
