@@ -81,20 +81,22 @@ class ItstoolTranslationProvider(pintail.translation.TranslationProvider):
                 import concurrent.futures
                 self._executor = concurrent.futures.ThreadPoolExecutor()
             for source in directory.sources:
-                if source not in self._po_for_source:
-                    continue
-                pofile = self._po_for_source[source][lang]
-                if source.name == source.directory.path:
-                    pintail.site.Site._makedirs(directory.get_stage_path(lang))
-                    mofile = os.path.join(directory.get_stage_path(lang), lang + '.mo')
-                else:
-                    # If it's not the primary source, make a subdirectory for
-                    # the mo file so we don't conflict.
-                    modir = os.path.join(directory.get_stage_path(lang),
-                                         source.name.replace('/', '!'))
-                    pintail.site.Site._makedirs(modir)
-                    mofile = os.path.join(modir, lang + '.mo')
-                def _run_source_lang():
+                def _run_source_lang(source, lang):
+                    if source not in self._po_for_source:
+                        return False
+                    if lang not in self._po_for_source[source]:
+                        return False
+                    pofile = self._po_for_source[source][lang]
+                    if source.name == source.directory.path:
+                        pintail.site.Site._makedirs(directory.get_stage_path(lang))
+                        mofile = os.path.join(directory.get_stage_path(lang), lang + '.mo')
+                    else:
+                        # If it's not the primary source, make a subdirectory for
+                        # the mo file so we don't conflict.
+                        modir = os.path.join(directory.get_stage_path(lang),
+                                             source.name.replace('/', '!'))
+                        pintail.site.Site._makedirs(modir)
+                        mofile = os.path.join(modir, lang + '.mo')
                     subprocess.call(['msgfmt', '-o', mofile, pofile])
                     self._mo_for_po[pofile] = mofile
                     cmd = ['itstool',
@@ -109,7 +111,7 @@ class ItstoolTranslationProvider(pintail.translation.TranslationProvider):
                         return False
                     return True
                 self._threaded_sources.setdefault(source, {})
-                self._threaded_sources[source][lang] = self._executor.submit(_run_source_lang)
+                self._threaded_sources[source][lang] = self._executor.submit(_run_source_lang, source, lang)
             return True
         return False
 
